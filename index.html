@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>FloodWatch SG</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  /* Palette drawn from NEA's own brand colours (nea.gov.sg): Allports blue
+     for the primary/informational tone that carries their weather & air
+     quality tiles, Conifer green (darkened for text contrast) for the
+     positive/environmental accent, Zanah's pale green for soft "all clear"
+     surfaces. Noto Sans is the typeface used broadly across Singapore
+     government digital services for its wide multilingual coverage. */
+  :root{
+    --bg:#f5f8f1; --card:#ffffff; --ink:#132433; --muted:#5c6b63;
+    --line:#dfe6da; --brand:#006fa1; --brand-dark:#004a68;
+    --accent:#5c7a12; --accent-wash:#eaf3d1;
+    --amber:#c9820a; --red:#c0392b;
+    --chip-bg:#eaf3d1;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:"Noto Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:480px;margin:0 auto;min-height:100vh;background:var(--bg);
+    display:flex;flex-direction:column;}
+  header{padding:18px 18px 14px;background:linear-gradient(135deg,var(--brand),var(--brand-dark));
+    color:#fff;border-radius:0 0 20px 20px;box-shadow:0 4px 16px rgba(0,74,104,.25);
+    border-bottom:4px solid var(--accent);}
+  header .row{display:flex;align-items:center;gap:10px;}
+  header .drop{font-size:22px;line-height:1;}
+  header h1{font-size:19px;margin:0;font-weight:800;letter-spacing:.2px;}
+  header p.tag{margin:4px 0 0;font-size:12.5px;opacity:.9;}
+  .locbar{margin-top:12px;display:flex;gap:8px;align-items:center;}
+  select#areaSelect{flex:1;padding:8px 10px;border-radius:10px;border:none;
+    font-size:13px;background:rgba(255,255,255,.18);color:#fff;}
+  select#areaSelect option{color:#132433;}
+  button.iconbtn{background:rgba(255,255,255,.2);border:none;color:#fff;border-radius:10px;
+    padding:8px 10px;font-size:13px;cursor:pointer;}
+
+  main{padding:14px 16px 90px;flex:1;}
+
+  .verdict{border-radius:16px;padding:16px;margin-bottom:14px;border:1px solid var(--line);
+    background:var(--card);box-shadow:0 1px 3px rgba(0,0,0,.04);}
+  .verdict.ok{border-color:#cfe3a8;background:var(--accent-wash);}
+  .verdict.warn{border-color:#f3ddb0;background:#fdf6e6;}
+  .verdict.danger{border-color:#f0c4bd;background:#fdeeec;}
+  .verdict .vline{font-size:16px;font-weight:800;margin:0 0 4px;}
+  .verdict .vsub{font-size:12.5px;color:var(--muted);margin:0;}
+  .verdict .vsub b{color:var(--ink);}
+
+  .banner{font-size:12px;padding:9px 12px;border-radius:10px;margin-bottom:14px;
+    background:#fff4e0;border:1px solid #f0d9a6;color:#7a5300;}
+  .banner.live{background:var(--accent-wash);border-color:#cfe3a8;color:#3f5510;}
+
+  #map{width:100%;height:260px;border-radius:14px;border:1px solid var(--line);
+    margin-bottom:14px;background:#e7ece9;}
+
+  .section-title{font-size:12.5px;text-transform:uppercase;letter-spacing:.06em;
+    color:var(--muted);margin:18px 0 8px;font-weight:700;}
+
+  .devbox{margin-top:22px;}
+  .devbox summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;
+    -webkit-tap-highlight-color:transparent;}
+  .devbox summary::-webkit-details-marker{display:none;}
+  .devbox summary::before{content:'▸';font-size:9px;color:var(--muted);
+    display:inline-block;transition:transform .15s ease;}
+  .devbox[open] summary::before{transform:rotate(90deg);}
+  .devbox .card{margin-top:8px;}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:12px 14px;margin-bottom:10px;}
+  .alertcard{display:flex;gap:10px;align-items:flex-start;}
+  .sev-dot{width:10px;height:10px;border-radius:50%;margin-top:5px;flex:none;}
+  .sev-Extreme,.sev-Severe{background:var(--red);}
+  .sev-Moderate{background:var(--amber);}
+  .sev-Minor,.sev-Unknown{background:#9aa79f;}
+  .alertcard .title{font-size:13.5px;font-weight:700;margin:0 0 2px;}
+  .alertcard .meta{font-size:11.5px;color:var(--muted);margin:0;}
+
+  .zonecard{display:flex;justify-content:space-between;align-items:center;font-size:13px;}
+  .zonecard .name{font-weight:600;}
+  .zonecard .dist{font-size:11.5px;color:var(--muted);white-space:nowrap;margin-left:8px;}
+
+  .chip{display:inline-block;background:var(--chip-bg);color:var(--accent);
+    font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:20px;margin-left:6px;
+    vertical-align:middle;}
+
+  .apikeyrow{display:flex;gap:8px;margin-top:8px;}
+  .apikeyrow input{flex:1;padding:8px 10px;border-radius:10px;border:1px solid var(--line);font-size:12.5px;}
+  .apikeyrow button{padding:8px 12px;border-radius:10px;border:none;background:var(--brand);
+    color:#fff;font-size:12.5px;cursor:pointer;}
+
+  footer{position:sticky;bottom:0;background:var(--card);border-top:1px solid var(--line);
+    padding:10px 16px;font-size:11px;color:var(--muted);display:flex;
+    justify-content:space-between;align-items:center;max-width:480px;margin:0 auto;width:100%;}
+  footer a{color:var(--accent);}
+  footer .src{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;margin-right:10px;}
+  .refresh{background:none;border:1px solid var(--line);border-radius:20px;padding:5px 11px;
+    font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+    color:var(--accent);cursor:pointer;}
+  .small-muted{font-size:11.5px;color:var(--muted);}
+  .empty{font-size:12.5px;color:var(--muted);padding:6px 2px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="row">
+      <span class="drop">💧</span>
+      <div>
+        <h1>FloodWatch SG</h1>
+        <p class="tag">Live flood alerts, laid over known flood-prone spots</p>
+      </div>
+    </div>
+    <div class="locbar">
+      <select id="areaSelect">
+        <option value="geo">📍 Use my current location</option>
+      </select>
+      <button class="iconbtn" id="refreshBtn" title="Refresh now">↻</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="verdict ok" id="verdictCard">
+      <p class="vline" id="verdictLine">Checking your area…</p>
+      <p class="vsub" id="verdictSub">Locating you and loading the latest PUB flood alerts.</p>
+    </div>
+
+    <div class="banner" id="feedBanner" style="display:none;"></div>
+
+    <div id="map"></div>
+
+    <div class="section-title">Active alerts near you <span class="chip" id="alertCount">0</span></div>
+    <div id="alertList"><p class="empty">Loading…</p></div>
+
+    <div class="section-title">Nearby known flood-prone spots <span class="chip" id="zoneCount">0</span></div>
+    <div id="zoneList"><p class="empty">Loading…</p></div>
+
+    <details class="devbox">
+      <summary class="section-title">Developer testing</summary>
+      <div class="card">
+        <p class="small-muted" style="margin:0 0 6px;">Optional: paste a data.gov.sg API key to test with production rate limits. Kept in memory only — never stored or sent anywhere else.</p>
+        <div class="apikeyrow">
+          <input id="apiKeyInput" placeholder="x-api-key (optional)" />
+          <button id="applyKeyBtn">Apply</button>
+        </div>
+        <p class="small-muted" style="margin:12px 0 6px;">Endpoint is confirmed from PUB's own spec (<span class="mono">…/v2/real-time/api/weather/flood-alerts</span>). If data.gov.sg ever moves it again, paste the new URL here — no code edit needed.</p>
+        <div class="apikeyrow">
+          <input id="endpointInput" placeholder="https://api-open.data.gov.sg/v2/real-time/api/…" />
+          <button id="applyEndpointBtn">Use this</button>
+        </div>
+        <p class="small-muted" style="margin:12px 0 6px;">Seeing "API KEY REQUIRED" on the map itself? That's a separate key, from Carto (the tile provider) — not data.gov.sg. Free at <span class="mono">carto.com/basemaps/apikey</span>, then paste it here to clear the watermark.</p>
+        <div class="apikeyrow">
+          <input id="cartoKeyInput" placeholder="Carto basemap API key (optional)" />
+          <button id="applyCartoKeyBtn">Apply</button>
+        </div>
+      </div>
+    </details>
+  </main>
+
+  <footer>
+    <span class="src" title="Flood Alerts across Singapore API (PUB, via data.gov.sg) · Flood Prone Areas list (PUB, Apr 2025)">Sources: PUB Flood Alerts API &amp; Flood Prone Areas list, via data.gov.sg</span>
+    <button class="refresh" id="lastUpdated">–</button>
+  </footer>
+</div>
+
+<script>
+/* ---------- Known flood-prone areas ----------
+   PUB's own published list ("List of Flood Prone Areas in Singapore",
+   updated 2 Apr 2025) — NOT sourced from data.gov.sg, which only exposes a
+   4-row yearly hectare total under the "Flood Prone Areas" dataset with no
+   coordinates at all. Coordinates below are approximate, manually placed
+   from the location names — illustrative, not authoritative geometry. */
+const FLOOD_PRONE_AREAS = [
+  ["Alexandra Road / Jervois Road",1.2870,103.8280],
+  ["Admiralty Road West nr Dock Road West",1.4460,103.7490],
+  ["Beach Road",1.2960,103.8570],
+  ["Bedok South Road / Bedok South Ave 1",1.3210,103.9430],
+  ["Service road off Changi Road nr Chin Cheng Ave",1.3230,103.9130],
+  ["Commonwealth Avenue / Commonwealth Drive",1.3030,103.8010],
+  ["CTE near slip road to Moulmein Road",1.3160,103.8460],
+  ["Farrer Park (Derbyshire Rd / Farrer Park Field)",1.3120,103.8540],
+  ["Hong Kah Area",1.3480,103.7250],
+  ["Indus Road",1.2900,103.8210],
+  ["Jalan Benaan Kapal",1.3230,103.8980],
+  ["Jalan Besar Area",1.3080,103.8560],
+  ["Jalan Mashor",1.3350,103.8880],
+  ["Jalan Mat Jambol",1.3260,103.9060],
+  ["Jalan Taman",1.3330,103.9070],
+  ["King George's Ave (People's Assoc HQ)",1.3110,103.8650],
+  ["Langsat Road Area",1.3160,103.9150],
+  ["Lorong Buangkok",1.3760,103.8750],
+  ["Lorong H Telok Kurau nr Siglap Canal",1.3120,103.9210],
+  ["Lower Delta Road / Alexandra Road",1.2830,103.8250],
+  ["Margaret Drive / Tanglin Road",1.3020,103.8110],
+  ["Meyer / Fort / Arthur / Margate / Ramsgate Rd",1.3010,103.8850],
+  ["Mimosa Walk",1.3690,103.8720],
+  ["Mindef Changi Camp off Farnborough Rd",1.3550,103.9880],
+  ["Mountbatten Road to Jalan Seaview",1.3040,103.8890],
+  ["Neo Pee Teck Lane",1.3350,103.8590],
+  ["New Upper Changi Rd nr Tanah Merah Kechil Ave",1.3270,103.9540],
+  ["Rose Lane",1.3220,103.8770],
+  ["Second Chin Bee Road",1.3260,103.6980],
+  ["Sennett Estate",1.3600,103.8680],
+  ["Service road off Tampines Rd nr Jalan Teliti",1.3620,103.8950],
+  ["Stevens Road / Balmoral Road",1.3140,103.8260],
+  ["South Bridge / North Canal / Upp Hokien / Upp Pickering",1.2850,103.8460],
+  ["Upp East Coast Rd nr Parbury Avenue",1.3080,103.9280],
+  ["Waterloo / Albert / Bencoolen / Prinsep St",1.2990,103.8500],
+  ["Zion Road (Boys' Brigade HQ)",1.2890,103.8320],
+];
+
+/* Sample alerts used ONLY if every live-endpoint attempt fails.
+   Clearly flagged in the UI whenever shown. */
+const SAMPLE_ALERTS = [
+  { area:"Dunearn Road (nr Chancery Lane)", lat:1.3230, lon:103.8130,
+    headline:"Flash flood reported — avoid the affected stretch.",
+    severity:"Moderate", issued: new Date(Date.now()-25*60000).toISOString() },
+];
+
+let USER_LOC = null;          // {lat, lon}
+let API_KEY = "";
+let LIVE_MODE = false;
+let ALERTS = [];
+let map, alertLayer, zoneLayer;
+// Confirmed 2 Sep 2026 from PUB's own OpenAPI spec (downloaded via "Download
+// API Specs" on the dataset page — none of this path's segments could be
+// guessed: it's nested under /weather/ despite being a PUB dataset with no
+// weather branding anywhere else on it). Kept as a list — with the app's
+// override field able to prepend to it — in case the path moves again.
+let CANDIDATE_ENDPOINTS = [
+  "https://api-open.data.gov.sg/v2/real-time/api/weather/flood-alerts",
+];
+const POLL_MS = 60000;
+
+function haversine(lat1,lon1,lat2,lon2){
+  const R=6371000, toRad=d=>d*Math.PI/180;
+  const dLat=toRad(lat2-lat1), dLon=toRad(lon2-lon1);
+  const a=Math.sin(dLat/2)**2+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+function fmtDist(m){
+  if(m<950) return Math.round(m/10)*10 + "m";
+  return (m/1000).toFixed(1) + "km";
+}
+function fmtTimeAgo(iso){
+  const d=Math.max(0,(Date.now()-new Date(iso).getTime())/60000);
+  if(d<1) return "just now";
+  if(d<60) return Math.round(d)+"m ago";
+  return Math.round(d/60)+"h ago";
+}
+
+/* ---------- Map setup ----------
+   Real street-level tiles from Carto's free "light_all" basemap. Carto
+   started requiring an API key for this in late Aug 2026 and watermarks
+   unauthenticated requests with "API KEY REQUIRED" — a real risk, accepted
+   deliberately here in exchange for actual map detail (a fully dependency-
+   free inline SVG version was tried and rejected: too little geographic
+   context to be useful). If the watermark bothers you, get a free key at
+   carto.com/basemaps/apikey (5M requests/month free) and add
+   `?api_key=YOUR_KEY` to the tile URL below. */
+let cartoTileLayer;
+function cartoTileUrl(key){
+  return 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png' + (key ? '?api_key='+encodeURIComponent(key) : '');
+}
+function setCartoKey(key){
+  if(cartoTileLayer) map.removeLayer(cartoTileLayer);
+  cartoTileLayer = L.tileLayer(cartoTileUrl(key), {maxZoom:18, subdomains:'abcd'});
+  cartoTileLayer.addTo(map);
+  cartoTileLayer.bringToBack();
+}
+function initMap(){
+  map = L.map('map',{zoomControl:false,attributionControl:false}).setView([1.3521,103.8198],11.5);
+  setCartoKey('');
+  zoneLayer = L.layerGroup().addTo(map);
+  alertLayer = L.layerGroup().addTo(map);
+
+  FLOOD_PRONE_AREAS.forEach(([name,lat,lon])=>{
+    L.circle([lat,lon],{radius:220,color:'#c9820a',weight:1,fillColor:'#f2c46b',fillOpacity:0.35})
+      .bindPopup(`<b>${name}</b><br><span style="font-size:11px;color:#666">Known flood-prone spot (PUB list, Apr 2025)</span>`)
+      .addTo(zoneLayer);
+  });
+}
+
+function renderAlertsOnMap(){
+  alertLayer.clearLayers();
+  ALERTS.forEach(a=>{
+    const color = (a.severity==="Extreme"||a.severity==="Severe") ? '#c0392b' :
+                  (a.severity==="Moderate") ? '#c9820a' : '#7a8a83';
+    L.circleMarker([a.lat,a.lon],{radius:9,color:'#fff',weight:2,fillColor:color,fillOpacity:0.95})
+      .bindPopup(`<b>${a.area}</b><br>${a.description || a.headline}<br><span style="font-size:11px;color:#666">${a.severity} · ${fmtTimeAgo(a.issued)}</span>`)
+      .addTo(alertLayer);
+  });
+}
+
+/* ---------- Populate area picker with the 36 known spots ---------- */
+function populateAreaSelect(){
+  const sel = document.getElementById('areaSelect');
+  FLOOD_PRONE_AREAS.forEach(([name,lat,lon],i)=>{
+    const opt=document.createElement('option');
+    opt.value = i;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  });
+  sel.addEventListener('change', ()=>{
+    if(sel.value==='geo'){ locateUser(); return; }
+    const [name,lat,lon] = FLOOD_PRONE_AREAS[+sel.value];
+    USER_LOC = {lat,lon};
+    map.setView([lat,lon],14);
+    L.marker([lat,lon]).addTo(map).bindPopup("Saved area: "+name).openPopup();
+    refreshDerived();
+  });
+}
+
+function locateUser(){
+  if(!navigator.geolocation){
+    USER_LOC = {lat:1.3521, lon:103.8198};
+    refreshDerived();
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    pos=>{
+      USER_LOC = {lat:pos.coords.latitude, lon:pos.coords.longitude};
+      map.setView([USER_LOC.lat,USER_LOC.lon],14);
+      L.circleMarker([USER_LOC.lat,USER_LOC.lon],{radius:7,color:'#fff',weight:2,fillColor:'#5c7a12',fillOpacity:1}).addTo(map);
+      refreshDerived();
+    },
+    ()=>{
+      // permission denied / unavailable — fall back to city centre
+      USER_LOC = {lat:1.3521, lon:103.8198};
+      refreshDerived();
+    },
+    {timeout:6000}
+  );
+}
+
+/* ---------- Live data fetch, per the confirmed OpenAPI spec ----------
+   GET /v2/real-time/api/weather/flood-alerts
+   -> {code, data:{records:[{datetime, item:{type, isStationData, msgType,
+        identifier, readings:[{area:{areaDesc, circle:[lat,lon,radiusKm]},
+        category, certainty, description, event, headline, instruction,
+        responseType, severity, urgency}]}, updatedTimestamp}], paginationToken}, errorMsg}
+   Most records are heartbeat "observation" pings with an empty readings[]
+   array — a record only carries content when PUB actually issues or cancels
+   an alert. Every issued alert gets a matching msgType:"Cancel" once the
+   flood subsides, so "active right now" means: per area, take the latest
+   reading and check it wasn't cancelled. */
+function flattenRecords(records){
+  const flat = [];
+  for(const rec of records){
+    const readings = rec?.item?.readings;
+    if(!Array.isArray(readings) || !readings.length) continue;
+    for(const r of readings){
+      const circle = r.area?.circle;
+      if(!Array.isArray(circle) || circle.length<2) continue;
+      flat.push({
+        lat:+circle[0], lon:+circle[1], radiusKm:circle[2],
+        area: r.area?.areaDesc || "Unnamed location",
+        headline: r.headline || r.event || "Flood alert",
+        description: r.description || "",
+        instruction: r.instruction || "",
+        severity: r.severity || "Unknown",
+        urgency: r.urgency || "",
+        msgType: rec.item.msgType,           // "Alert" or "Cancel"
+        issued: rec.datetime,
+      });
+    }
+  }
+  return flat;
+}
+function activeAlertsFromFlat(flat){
+  // Latest reading per area; drop areas whose latest notice is a cancellation.
+  const byArea = new Map();
+  for(const r of flat){
+    const prev = byArea.get(r.area);
+    if(!prev || new Date(r.issued) > new Date(prev.issued)) byArea.set(r.area, r);
+  }
+  return [...byArea.values()].filter(r=>r.msgType !== "Cancel");
+}
+
+async function fetchFloodAlerts(dateParam){
+  const base = CANDIDATE_ENDPOINTS[0];
+  const headers = API_KEY ? {"x-api-key":API_KEY} : {};
+  const url = dateParam ? `${base}?date=${encodeURIComponent(dateParam)}` : base;
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), 6000);
+  const res = await fetch(url, {headers, signal:ctrl.signal});
+  clearTimeout(t);
+  if(!res.ok) throw new Error("HTTP "+res.status);
+  const json = await res.json();
+  if(json.code !== 0) throw new Error(json.errorMsg || "API error");
+  return json.data.records || [];
+}
+
+async function refreshAlerts(){
+  const banner = document.getElementById('feedBanner');
+  try{
+    const records = await fetchFloodAlerts(); // no date = latest available, per the spec
+    LIVE_MODE = true;
+    const flat = flattenRecords(records);
+    ALERTS = activeAlertsFromFlat(flat);
+    banner.style.display = 'block';
+    banner.className = 'banner live';
+    banner.textContent = ALERTS.length
+      ? "✓ Live PUB flood alert feed connected."
+      : "✓ Live PUB feed connected — no active flood alerts right now.";
+  } catch(e){
+    LIVE_MODE = false;
+    ALERTS = SAMPLE_ALERTS.map(a=>({...a}));
+    banner.style.display = 'block';
+    banner.className = 'banner';
+    banner.textContent = "⚠ Live PUB feed unreachable right now (" + e.message + ") — showing a sample alert so you can see how this would look.";
+  }
+  document.getElementById('lastUpdated').textContent = "Updated " + new Date().toLocaleTimeString('en-SG',{hour:'2-digit',minute:'2-digit'});
+  renderAlertsOnMap();
+  renderAlertList();
+  refreshDerived();
+}
+
+function renderAlertList(){
+  const el = document.getElementById('alertList');
+  document.getElementById('alertCount').textContent = ALERTS.length;
+  if(!ALERTS.length){ el.innerHTML = '<p class="empty">No active alerts reported.</p>'; return; }
+  el.innerHTML = ALERTS.map(a=>{
+    const dist = USER_LOC ? fmtDist(haversine(USER_LOC.lat,USER_LOC.lon,a.lat,a.lon)) : "–";
+    return `<div class="card alertcard">
+      <div class="sev-dot sev-${a.severity}"></div>
+      <div>
+        <p class="title">${a.area} <span class="chip">${dist}</span></p>
+        <p class="meta">${a.description || a.headline}</p>
+        ${a.instruction ? `<p class="meta">${a.instruction}</p>` : ''}
+        <p class="meta">${a.headline} · ${a.severity}${a.urgency ? ' · '+a.urgency : ''} · ${fmtTimeAgo(a.issued)}</p>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderZoneList(){
+  const el = document.getElementById('zoneList');
+  if(!USER_LOC){ el.innerHTML = '<p class="empty">Locate yourself to see nearby spots.</p>'; return; }
+  const withDist = FLOOD_PRONE_AREAS.map(([name,lat,lon])=>({
+    name, dist: haversine(USER_LOC.lat,USER_LOC.lon,lat,lon)
+  })).sort((a,b)=>a.dist-b.dist).slice(0,5);
+  document.getElementById('zoneCount').textContent = FLOOD_PRONE_AREAS.length;
+  el.innerHTML = withDist.map(z=>`<div class="card zonecard">
+      <span class="name">${z.name}</span>
+      <span class="dist">${fmtDist(z.dist)} away</span>
+    </div>`).join('');
+}
+
+function refreshDerived(){
+  if(!USER_LOC){ return; }
+  renderAlertList();
+  renderZoneList();
+
+  // one-line verdict
+  const card = document.getElementById('verdictCard');
+  const line = document.getElementById('verdictLine');
+  const sub = document.getElementById('verdictSub');
+
+  let nearestAlert = null, nearestAlertDist = Infinity;
+  ALERTS.forEach(a=>{
+    const d = haversine(USER_LOC.lat,USER_LOC.lon,a.lat,a.lon);
+    if(d<nearestAlertDist){ nearestAlertDist=d; nearestAlert=a; }
+  });
+  let nearestZone = null, nearestZoneDist = Infinity;
+  FLOOD_PRONE_AREAS.forEach(([name,lat,lon])=>{
+    const d = haversine(USER_LOC.lat,USER_LOC.lon,lat,lon);
+    if(d<nearestZoneDist){ nearestZoneDist=d; nearestZone=name; }
+  });
+
+  if(nearestAlert && nearestAlertDist < 5000){
+    card.className = 'verdict danger';
+    line.textContent = `⚠ Active alert ${fmtDist(nearestAlertDist)} away`;
+    sub.innerHTML = `<b>${nearestAlert.area}</b> — ${nearestAlert.headline}`;
+  } else if(nearestZoneDist < 600){
+    card.className = 'verdict warn';
+    line.textContent = "No active alerts, but you're in a known flood zone";
+    sub.innerHTML = `<b>${nearestZone}</b> is ${fmtDist(nearestZoneDist)} from you — has a history of flooding in heavy rain.`;
+  } else {
+    card.className = 'verdict ok';
+    line.textContent = "No alerts, no known flood zone nearby";
+    sub.innerHTML = `Nearest listed flood-prone spot (<b>${nearestZone}</b>) is ${fmtDist(nearestZoneDist)} away.`;
+  }
+}
+
+/* ---------- Wire up ---------- */
+document.getElementById('refreshBtn').addEventListener('click', refreshAlerts);
+document.getElementById('applyKeyBtn').addEventListener('click', ()=>{
+  API_KEY = document.getElementById('apiKeyInput').value.trim();
+  refreshAlerts();
+});
+document.getElementById('applyEndpointBtn').addEventListener('click', ()=>{
+  const url = document.getElementById('endpointInput').value.trim();
+  if(!url) return;
+  CANDIDATE_ENDPOINTS = [url, ...CANDIDATE_ENDPOINTS.filter(u=>u!==url)];
+  refreshAlerts();
+});
+document.getElementById('applyCartoKeyBtn').addEventListener('click', ()=>{
+  const key = document.getElementById('cartoKeyInput').value.trim();
+  setCartoKey(key);
+});
+
+initMap();
+populateAreaSelect();
+locateUser();
+refreshAlerts();
+setInterval(refreshAlerts, POLL_MS);
+</script>
+</body>
+</html>
