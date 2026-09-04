@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<title>FloodWatch SG</title>
+<title>Puddle Watch SG</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
@@ -52,6 +52,8 @@
   .verdict .vline{font-size:16px;font-weight:800;margin:0 0 4px;}
   .verdict .vsub{font-size:12.5px;color:var(--muted);margin:0;}
   .verdict .vsub b{color:var(--ink);}
+  .verdict.compound{border-color:#dba7c9;background:linear-gradient(135deg,#fdeeec 0%,#f3e5f8 100%);}
+  .verdict.compound .vline{color:#7a1f4d;}
 
   .banner{font-size:12px;padding:9px 12px;border-radius:10px;margin-bottom:14px;
     background:#fff4e0;border:1px solid #f0d9a6;color:#7a5300;}
@@ -101,6 +103,29 @@
     vertical-align:middle;}
   .chip.dengue{background:#f3e5f8;color:#6a1b9a;}
 
+  .mechbox{margin-top:22px;}
+  .mechbox summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;
+    -webkit-tap-highlight-color:transparent;}
+  .mechbox summary::-webkit-details-marker{display:none;}
+  .mechbox summary::before{content:'▸';font-size:9px;color:var(--muted);
+    display:inline-block;transition:transform .15s ease;}
+  .mechbox[open] summary::before{transform:rotate(90deg);}
+  .mechbox .card{margin-top:8px;}
+  .mechbox .card p{font-size:12.5px;line-height:1.55;margin:0 0 10px;color:var(--ink);}
+  .mechbox .card p:last-child{margin-bottom:0;}
+  .mechbox .stat{background:var(--accent-wash);border:1px solid #cfe3a8;border-radius:10px;
+    padding:9px 11px;font-size:12px;color:#3f5510;margin:0 0 10px;}
+  .mechbox .caveat{font-size:11px;color:var(--muted);font-style:italic;}
+
+  .historyrow{display:flex;justify-content:space-between;align-items:center;gap:8px;
+    font-size:11.5px;padding:7px 0;border-bottom:1px solid var(--line);}
+  .historyrow:last-child{border-bottom:none;}
+  .historyrow .hdate{color:var(--muted);flex:none;}
+  .historyrow .hsig{display:flex;gap:5px;align-items:center;white-space:nowrap;}
+  .hdot{width:8px;height:8px;border-radius:50%;flex:none;}
+  .hdot.on{background:var(--red);}
+  .hdot.off{background:#c8d2c4;}
+
   .apikeyrow{display:flex;gap:8px;margin-top:8px;}
   .apikeyrow input{flex:1;padding:8px 10px;border-radius:10px;border:1px solid var(--line);font-size:12.5px;}
   .apikeyrow button{padding:8px 12px;border-radius:10px;border:none;background:var(--brand);
@@ -126,8 +151,8 @@
     <div class="row">
       <span class="drop">💧</span>
       <div>
-        <h1>FloodWatch SG</h1>
-        <p class="tag">Live flood alerts, laid over known flood-prone spots</p>
+        <h1>Puddle Watch SG</h1>
+        <p class="tag">Where standing water links flood risk and dengue clusters</p>
       </div>
     </div>
     <div class="locbar">
@@ -141,7 +166,12 @@
   <main>
     <div class="verdict ok" id="verdictCard">
       <p class="vline" id="verdictLine">Checking your area…</p>
-      <p class="vsub" id="verdictSub">Locating you and loading the latest PUB flood alerts.</p>
+      <p class="vsub" id="verdictSub">Locating you and checking flood + dengue signals nearby.</p>
+    </div>
+
+    <div class="verdict compound" id="compoundCard" style="display:none;">
+      <p class="vline" id="compoundLine"></p>
+      <p class="vsub" id="compoundSub"></p>
     </div>
 
     <div class="banner" id="feedBanner" style="display:none;"></div>
@@ -157,6 +187,18 @@
 
     <div class="section-title">Active dengue clusters near you <span class="chip dengue" id="dengueCount">0</span></div>
     <div id="dengueList"><p class="empty">Loading…</p></div>
+
+    <details class="mechbox">
+      <summary class="section-title">Why show these together?</summary>
+      <div class="card">
+        <p>Standing water after a flood breeds mosquitoes in ~7–10 days — a real link, not just two hazards on one map.</p>
+        <p class="stat" id="staticOverlapStat">Checking overlap…</p>
+        <p class="caveat">Snapshot only, not a trend yet — this device starts logging visits below to build toward one.</p>
+      </div>
+    </details>
+
+    <div class="section-title">Your risk history <span class="chip" id="historyCount">0</span></div>
+    <div id="historyList"><p class="empty">Check back over a few days to build a history.</p></div>
 
     <details class="devbox">
       <summary class="section-title">Developer testing</summary>
@@ -290,6 +332,83 @@ function dengueColor(cases){
   return cases>=100 ? '#6a1b9a' : cases>=10 ? '#9c4dcc' : '#ce93d8';
 }
 
+/* ---------- Static cross-dataset overlap (independent of user location) ----------
+   The one honestly-computable "layered" stat today: how many of the 36
+   known flood-prone spots currently sit inside or near one of the 12 active
+   dengue clusters. Same numbers as the offline analysis in the field notes
+   (0 inside, nearest ~46m, 2 within 500m) — computed live here instead of
+   hardcoded, so it stays correct if either list changes. This is a same-day
+   spatial snapshot, not a trend — it can't by itself confirm or refute the
+   flood->dengue mechanism, and the explainer text next to it says so. */
+function computeStaticOverlap(){
+  let inside=0, within500=0;
+  let nearestAll = {dist:Infinity, spot:null, cluster:null};
+  FLOOD_PRONE_AREAS.forEach(([name,lat,lon])=>{
+    let nearestForSpot = Infinity, nearestClusterForSpot=null;
+    DENGUE_CLUSTERS.forEach(c=>{
+      const d = distToClusterMeters(lat,lon,c.ring);
+      if(d<nearestForSpot){ nearestForSpot=d; nearestClusterForSpot=c; }
+    });
+    if(nearestForSpot===0) inside++;
+    if(nearestForSpot<=500) within500++;
+    if(nearestForSpot<nearestAll.dist) nearestAll={dist:nearestForSpot, spot:name, cluster:nearestClusterForSpot};
+  });
+  return {inside, within500, total:FLOOD_PRONE_AREAS.length, clusterTotal:DENGUE_CLUSTERS.length, nearestAll};
+}
+function renderStaticOverlap(){
+  const el = document.getElementById('staticOverlapStat');
+  const {inside, within500, total, nearestAll} = computeStaticOverlap();
+  el.innerHTML = `<b>${inside}/${total}</b> flood spots inside a cluster · <b>${within500}</b> within 500m · nearest: <b>${nearestAll.spot}</b>, ${fmtDist(nearestAll.dist)}`;
+}
+
+/* ---------- Per-device visit history (localStorage) ----------
+   Building block for the lead-lag test the mechanism above can't yet run:
+   logs this browser's flood + dengue signals with a timestamp on every
+   visit. One entry per calendar day (revisiting the same day overwrites,
+   not duplicates); capped at the most recent 60 days. Wrapped in try/catch
+   since some browsers (private mode, storage disabled) throw on access —
+   the app degrades to "no history yet" rather than breaking. */
+const HISTORY_KEY = 'fwsg_history_v1';
+function loadHistory(){
+  try{
+    const raw = localStorage.getItem(HISTORY_KEY);
+    return raw ? JSON.parse(raw) : [];
+  }catch(e){ return []; }
+}
+function saveHistory(list){
+  try{ localStorage.setItem(HISTORY_KEY, JSON.stringify(list)); }catch(e){ /* degrade silently */ }
+}
+function logVisit(entry){
+  const list = loadHistory();
+  const todayKey = new Date(entry.t).toISOString().slice(0,10);
+  const idx = list.findIndex(e=>new Date(e.t).toISOString().slice(0,10)===todayKey);
+  if(idx>=0) list[idx] = entry; else list.push(entry);
+  const trimmed = list.slice(-60);
+  saveHistory(trimmed);
+  return trimmed;
+}
+function renderHistory(list){
+  const el = document.getElementById('historyList');
+  document.getElementById('historyCount').textContent = list.length;
+  if(!list.length){
+    el.innerHTML = '<p class="empty">Visit a couple more times (ideally a few days apart) to start building a history here.</p>';
+    return;
+  }
+  const rows = list.slice().reverse().map(e=>{
+    const dateStr = new Date(e.t).toLocaleDateString('en-SG',{day:'2-digit',month:'short'});
+    const floodTxt = e.floodActive
+      ? (e.floodType==='active alert' ? 'Active alert' : 'Near flood-prone spot')
+      : 'No flood signal';
+    const dengueTxt = e.dengueDist==null ? '–' : (e.dengueInside ? 'inside cluster' : fmtDist(e.dengueDist)+' to cluster');
+    return `<div class="historyrow">
+      <span class="hdate">${dateStr}</span>
+      <span class="hsig"><span class="hdot ${e.floodActive?'on':'off'}"></span>${floodTxt}</span>
+      <span class="hsig">🦟 ${dengueTxt}</span>
+    </div>`;
+  }).join('');
+  el.innerHTML = `<div class="card" style="padding:2px 14px;">${rows}</div>`;
+}
+
 /* Sample alerts used ONLY if every live-endpoint attempt fails.
    Clearly flagged in the UI whenever shown. */
 const SAMPLE_ALERTS = [
@@ -372,6 +491,7 @@ function initMap(){
 }
 
 function renderAlertsOnMap(){
+  if(!alertLayer) return; // map failed to init (e.g. Leaflet blocked) — degrade, don't block the lists below
   alertLayer.clearLayers();
   ALERTS.forEach(a=>{
     const color = (a.severity==="Extreme"||a.severity==="Severe") ? '#c0392b' :
@@ -395,8 +515,10 @@ function populateAreaSelect(){
     if(sel.value==='geo'){ locateUser(); return; }
     const [name,lat,lon] = FLOOD_PRONE_AREAS[+sel.value];
     USER_LOC = {lat,lon};
-    map.setView([lat,lon],14);
-    L.marker([lat,lon]).addTo(map).bindPopup("Saved area: "+name).openPopup();
+    if(map){
+      map.setView([lat,lon],14);
+      L.marker([lat,lon]).addTo(map).bindPopup("Saved area: "+name).openPopup();
+    }
     refreshDerived();
   });
 }
@@ -410,8 +532,10 @@ function locateUser(){
   navigator.geolocation.getCurrentPosition(
     pos=>{
       USER_LOC = {lat:pos.coords.latitude, lon:pos.coords.longitude};
-      map.setView([USER_LOC.lat,USER_LOC.lon],14);
-      L.circleMarker([USER_LOC.lat,USER_LOC.lon],{radius:7,color:'#fff',weight:2,fillColor:'#5c7a12',fillOpacity:1}).addTo(map);
+      if(map){
+        map.setView([USER_LOC.lat,USER_LOC.lon],14);
+        L.circleMarker([USER_LOC.lat,USER_LOC.lon],{radius:7,color:'#fff',weight:2,fillColor:'#5c7a12',fillOpacity:1}).addTo(map);
+      }
       refreshDerived();
     },
     ()=>{
@@ -501,7 +625,7 @@ async function refreshAlerts(){
     banner.textContent = "⚠ Live PUB feed unreachable right now (" + e.message + ") — showing a sample alert so you can see how this would look.";
   }
   document.getElementById('lastUpdated').textContent = "Updated " + new Date().toLocaleTimeString('en-SG',{hour:'2-digit',minute:'2-digit'});
-  renderAlertsOnMap();
+  try{ renderAlertsOnMap(); }catch(e){ console.error('renderAlertsOnMap failed, continuing:', e); }
   renderAlertList();
   refreshDerived();
 }
@@ -589,22 +713,63 @@ function refreshDerived(){
     sub.innerHTML = `Nearest listed flood-prone spot (<b>${nearestZone}</b>) is ${fmtDist(nearestZoneDist)} away.`;
   }
 
-  // Dengue is a parallel health signal, not a flood signal — surfaced as its
-  // own banner rather than folded into the flood verdict above.
   let nearestCluster = null, nearestClusterDist = Infinity;
   DENGUE_CLUSTERS.forEach(c=>{
     const d = distToClusterMeters(USER_LOC.lat, USER_LOC.lon, c.ring);
     if(d<nearestClusterDist){ nearestClusterDist=d; nearestCluster=c; }
   });
+
+  // ---- Layer the two hazards into one verdict instead of two disjointed
+  // lists: a flood signal (active alert, or history of flooding at a nearby
+  // spot) counts as "compound" only when a dengue cluster is ALSO close by.
+  // That's the actual insight — not that both datasets exist, but that a
+  // stagnant-water mechanism could plausibly link them at this exact spot.
+  let floodSignal = null;
+  if(nearestAlert && nearestAlertDist < 5000){
+    floodSignal = {type:'active alert', dist:nearestAlertDist, label:nearestAlert.area};
+  } else if(nearestZoneDist < 600){
+    floodSignal = {type:'flood-prone history', dist:nearestZoneDist, label:nearestZone};
+  }
+  const dengueSignal = (nearestCluster && nearestClusterDist < 500)
+    ? {dist:nearestClusterDist, label:nearestCluster.locality, cases:nearestCluster.cases}
+    : null;
+
+  const compoundCard = document.getElementById('compoundCard');
+  const cLine = document.getElementById('compoundLine');
+  const cSub = document.getElementById('compoundSub');
+  if(floodSignal && dengueSignal){
+    compoundCard.style.display = 'block';
+    cLine.textContent = '⚠ Flood + dengue risk here';
+    const floodTxt = floodSignal.type==='active alert' ? 'Active alert' : 'Flood-prone spot';
+    const dengueTxt = dengueSignal.dist===0 ? 'inside cluster' : fmtDist(dengueSignal.dist)+' from cluster';
+    cSub.innerHTML = `${floodTxt} ${fmtDist(floodSignal.dist)} away · ${dengueSignal.label} (${dengueSignal.cases} cases), ${dengueTxt}. Standing water = mosquito risk — check for it nearby.`;
+  } else {
+    compoundCard.style.display = 'none';
+  }
+
+  // Dengue-only banner: only shown when the compound card above ISN'T
+  // already covering the same signal, so the same point isn't made twice.
   const note = document.getElementById('dengueNote');
-  if(nearestCluster && nearestClusterDist < 200){
+  if(dengueSignal && !floodSignal){
     note.style.display = 'block';
-    note.innerHTML = nearestClusterDist===0
-      ? `🦟 You're inside an active dengue cluster (<b>${nearestCluster.locality}</b>, ${nearestCluster.cases} cases) — clear any standing water nearby.`
-      : `🦟 An active dengue cluster (<b>${nearestCluster.locality}</b>, ${nearestCluster.cases} cases) is ${fmtDist(nearestClusterDist)} away.`;
+    note.innerHTML = dengueSignal.dist===0
+      ? `🦟 You're inside an active dengue cluster (<b>${dengueSignal.label}</b>, ${dengueSignal.cases} cases) — clear any standing water nearby.`
+      : `🦟 An active dengue cluster (<b>${dengueSignal.label}</b>, ${dengueSignal.cases} cases) is ${fmtDist(dengueSignal.dist)} away.`;
   } else {
     note.style.display = 'none';
   }
+
+  // ---- Log this visit toward the timestamped record a real lead-lag test
+  // would need (see the explainer panel above).
+  const historyList = logVisit({
+    t: Date.now(),
+    floodActive: !!floodSignal,
+    floodType: floodSignal ? floodSignal.type : null,
+    floodDist: floodSignal ? Math.round(floodSignal.dist) : null,
+    dengueDist: nearestCluster ? Math.round(nearestClusterDist) : null,
+    dengueInside: nearestCluster ? nearestClusterDist===0 : false,
+  });
+  renderHistory(historyList);
 }
 
 /* ---------- Wire up ---------- */
@@ -624,8 +789,9 @@ document.getElementById('applyCartoKeyBtn').addEventListener('click', ()=>{
   setCartoKey(key);
 });
 
-initMap();
+try{ initMap(); }catch(e){ console.error('Map init failed — continuing without the map:', e); }
 populateAreaSelect();
+renderStaticOverlap();
 locateUser();
 refreshAlerts();
 setInterval(refreshAlerts, POLL_MS);
