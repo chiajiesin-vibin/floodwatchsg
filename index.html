@@ -24,9 +24,14 @@
     --chip-bg:#eaf3d1;
   }
   *{box-sizing:border-box;}
-  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  html,body{margin:0;padding:0;color:var(--ink);
     font-family:"Noto Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
-  .wrap{max-width:480px;margin:0 auto;min-height:100vh;background:var(--bg);
+  body{
+    background-color:var(--bg);
+    background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27140%27%20height%3D%27140%27%3E%3Ctext%20x%3D%276%27%20y%3D%2738%27%20font-size%3D%2724%27%20opacity%3D%270.14%27%20transform%3D%27rotate%28-15%2018%2028%29%27%3E%F0%9F%A6%9F%3C%2Ftext%3E%3Ctext%20x%3D%2782%27%20y%3D%2788%27%20font-size%3D%2720%27%20opacity%3D%270.11%27%20transform%3D%27rotate%2822%2092%2078%29%27%3E%F0%9F%A6%9F%3C%2Ftext%3E%3Ctext%20x%3D%2736%27%20y%3D%27124%27%20font-size%3D%2728%27%20opacity%3D%270.13%27%20transform%3D%27rotate%28-28%2048%20112%29%27%3E%F0%9F%A6%9F%3C%2Ftext%3E%3C%2Fsvg%3E");
+    background-repeat:repeat;
+  }
+  .wrap{max-width:480px;margin:0 auto;min-height:100vh;background:transparent;
     display:flex;flex-direction:column;}
   header{padding:18px 18px 14px;background:linear-gradient(135deg,var(--brand),var(--brand-dark));
     color:#fff;border-radius:0 0 20px 20px;box-shadow:0 4px 16px rgba(0,74,104,.25);
@@ -112,6 +117,8 @@
     font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:20px;margin-left:6px;
     vertical-align:middle;}
   .chip.dengue{background:#f3e5f8;color:#6a1b9a;}
+  .chip.compound{background:#fce4ec;color:#c2185b;}
+  .chip.flood{background:#fdf1de;color:#c9820a;}
 
   .mechbox{margin-top:22px;}
   .mechbox summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;
@@ -194,6 +201,9 @@
       <span class="lg"><span class="sw sw-dengue"></span>Dengue cluster</span>
       <span class="lg"><span class="sw sw-compound"></span>Within 500m of both</span>
     </div>
+
+    <div class="section-title">Places with both flood &amp; dengue risk right now <span class="chip compound" id="compoundAreaCount">0</span></div>
+    <div id="compoundAreaList"><p class="empty">Checking for overlap…</p></div>
 
     <div class="section-title">Active alerts near you <span class="chip" id="alertCount">0</span></div>
     <div id="alertList"><p class="empty">Loading…</p></div>
@@ -397,6 +407,50 @@ function renderStaticOverlap(){
   const el = document.getElementById('staticOverlapStat');
   const {inside, within500, total, nearestAll} = computeStaticOverlap();
   el.innerHTML = `<b>${inside}/${total}</b> flood spots inside a cluster · <b>${within500}</b> within 500m · nearest: <b>${nearestAll.spot}</b>, ${fmtDist(nearestAll.dist)}`;
+}
+
+/* ---------- Island-wide compound risk list (not just near the user) ----------
+   Everything the per-user compound card and the map's dashed highlighting
+   check, but surfaced as its own list covering all 36 flood-prone spots plus
+   whatever alerts are live right now — so a resident can see every place in
+   Singapore currently carrying both signals, not just their own street.
+   Doesn't need USER_LOC at all: renders on load from the static list, then
+   again on every refreshAlerts() so live alerts are reflected too. */
+function computeCompoundAreas(){
+  const areas = [];
+  FLOOD_PRONE_AREAS.forEach(([name,lat,lon])=>{
+    const {cluster, dist} = nearestDengueCluster(lat, lon);
+    if(cluster && dist <= COMPOUND_THRESHOLD_M){
+      areas.push({name, kind:'flood-prone', dist, cluster});
+    }
+  });
+  ALERTS.forEach(a=>{
+    const {cluster, dist} = nearestDengueCluster(a.lat, a.lon);
+    if(cluster && dist <= COMPOUND_THRESHOLD_M){
+      areas.push({name:a.area, kind:'active alert', dist, cluster});
+    }
+  });
+  areas.sort((a,b)=>a.dist-b.dist);
+  return areas;
+}
+function renderCompoundAreas(){
+  const el = document.getElementById('compoundAreaList');
+  const areas = computeCompoundAreas();
+  document.getElementById('compoundAreaCount').textContent = areas.length;
+  if(!areas.length){
+    el.innerHTML = '<p class="empty">🦟 None right now — no flood-prone spot or active alert currently sits within 500m of a dengue cluster.</p>';
+    return;
+  }
+  el.innerHTML = areas.map(a=>`<div class="card dcard">
+      <div class="dsev-dot ${dengueSevClass(a.cluster.cases)}"></div>
+      <div>
+        <p class="title">${a.name}<br>
+          <span class="chip flood">${a.kind==='active alert' ? '⚠ Active flood alert' : '🌊 Flood-prone spot'}</span>
+          <span class="chip dengue">🦟 Dengue cluster</span>
+        </p>
+        <p class="meta">${a.dist===0?'Inside':fmtDist(a.dist)+' from'} ${a.cluster.locality} · ${a.cluster.cases} case${a.cluster.cases===1?'':'s'}</p>
+      </div>
+    </div>`).join('');
 }
 
 /* ---------- Per-device visit history (localStorage) ----------
@@ -709,6 +763,7 @@ async function refreshAlerts(){
   document.getElementById('lastUpdated').textContent = "Updated " + new Date().toLocaleTimeString('en-SG',{hour:'2-digit',minute:'2-digit'});
   try{ renderAlertsOnMap(); }catch(e){ console.error('renderAlertsOnMap failed, continuing:', e); }
   renderAlertList();
+  renderCompoundAreas();
   refreshDerived();
 }
 
@@ -883,6 +938,7 @@ try{
 }
 populateAreaSelect();
 renderStaticOverlap();
+renderCompoundAreas();
 locateUser();
 refreshAlerts();
 setInterval(refreshAlerts, POLL_MS);
