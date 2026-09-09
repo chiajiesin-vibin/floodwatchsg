@@ -60,7 +60,17 @@
   .banner.live{background:var(--accent-wash);border-color:#cfe3a8;color:#3f5510;}
 
   #map{width:100%;height:260px;border-radius:14px;border:1px solid var(--line);
-    margin-bottom:14px;background:#e7ece9;}
+    margin-bottom:8px;background:#e7ece9;}
+
+  .maplegend{display:flex;flex-wrap:wrap;gap:8px 14px;margin:0 0 14px;padding:8px 10px;
+    background:var(--card);border:1px solid var(--line);border-radius:10px;
+    font-size:11px;color:var(--muted);}
+  .maplegend .lg{display:flex;align-items:center;gap:5px;white-space:nowrap;}
+  .maplegend .sw{width:11px;height:11px;border-radius:50%;flex:none;display:inline-block;}
+  .sw-flood{background:#f2c46b;border:1.5px solid #c9820a;}
+  .sw-alert{background:#c0392b;border:1.5px solid #fff;box-shadow:0 0 0 1px #c0392b;}
+  .sw-dengue{background:#9c4dcc;border:1.5px solid #6a1b9a;}
+  .sw-compound{background:#f2c46b;border:2px dashed #c2185b;}
 
   .section-title{font-size:12.5px;text-transform:uppercase;letter-spacing:.06em;
     color:var(--muted);margin:18px 0 8px;font-weight:700;}
@@ -178,6 +188,12 @@
     <div class="banner dengue" id="dengueNote" style="display:none;"></div>
 
     <div id="map"></div>
+    <div class="maplegend">
+      <span class="lg"><span class="sw sw-flood"></span>Flood-prone spot</span>
+      <span class="lg"><span class="sw sw-alert"></span>Active alert</span>
+      <span class="lg"><span class="sw sw-dengue"></span>Dengue cluster</span>
+      <span class="lg"><span class="sw sw-compound"></span>Within 500m of both</span>
+    </div>
 
     <div class="section-title">Active alerts near you <span class="chip" id="alertCount">0</span></div>
     <div id="alertList"><p class="empty">Loading…</p></div>
@@ -332,6 +348,32 @@ function dengueColor(cases){
   return cases>=100 ? '#6a1b9a' : cases>=10 ? '#9c4dcc' : '#ce93d8';
 }
 
+/* ---------- Shared "is this compound?" threshold ----------
+   One number, used everywhere the app decides a spot/alert counts as close
+   enough to an active dengue cluster to matter: the live compound-risk card,
+   the static overlap stat, and the map's own compound highlighting below.
+   Kept in one place so those three can't silently drift apart. */
+const COMPOUND_THRESHOLD_M = 500;
+const COMPOUND_COLOR = '#c2185b';
+
+/* Nearest dengue cluster to any (lat,lon) — the one lookup every
+   cross-dataset feature in this file is built on top of. */
+function nearestDengueCluster(lat, lon){
+  let cluster = null, dist = Infinity;
+  DENGUE_CLUSTERS.forEach(c=>{
+    const d = distToClusterMeters(lat, lon, c.ring);
+    if(d<dist){ dist=d; cluster=c; }
+  });
+  return {cluster, dist};
+}
+/* Rough centroid (vertex average) of a cluster ring — good enough as a
+   visual anchor for the map's connecting line, not a precision measurement. */
+function clusterCenter(ring){
+  let sx=0, sy=0;
+  ring.forEach(([lon,lat])=>{ sx+=lon; sy+=lat; });
+  return [sy/ring.length, sx/ring.length]; // [lat, lon]
+}
+
 /* ---------- Static cross-dataset overlap (independent of user location) ----------
    The one honestly-computable "layered" stat today: how many of the 36
    known flood-prone spots currently sit inside or near one of the 12 active
@@ -344,14 +386,10 @@ function computeStaticOverlap(){
   let inside=0, within500=0;
   let nearestAll = {dist:Infinity, spot:null, cluster:null};
   FLOOD_PRONE_AREAS.forEach(([name,lat,lon])=>{
-    let nearestForSpot = Infinity, nearestClusterForSpot=null;
-    DENGUE_CLUSTERS.forEach(c=>{
-      const d = distToClusterMeters(lat,lon,c.ring);
-      if(d<nearestForSpot){ nearestForSpot=d; nearestClusterForSpot=c; }
-    });
-    if(nearestForSpot===0) inside++;
-    if(nearestForSpot<=500) within500++;
-    if(nearestForSpot<nearestAll.dist) nearestAll={dist:nearestForSpot, spot:name, cluster:nearestClusterForSpot};
+    const {cluster, dist} = nearestDengueCluster(lat,lon);
+    if(dist===0) inside++;
+    if(dist<=COMPOUND_THRESHOLD_M) within500++;
+    if(dist<nearestAll.dist) nearestAll={dist, spot:name, cluster};
   });
   return {inside, within500, total:FLOOD_PRONE_AREAS.length, clusterTotal:DENGUE_CLUSTERS.length, nearestAll};
 }
@@ -421,7 +459,7 @@ let USER_LOC = null;          // {lat, lon}
 let API_KEY = "";
 let LIVE_MODE = false;
 let ALERTS = [];
-let map, alertLayer, zoneLayer, dengueLayer;
+let map, alertLayer, zoneLayer, dengueLayer, linkLayer;
 // Confirmed 2 Sep 2026 from PUB's own OpenAPI spec (downloaded via "Download
 // API Specs" on the dataset page — none of this path's segments could be
 // guessed: it's nested under /weather/ despite being a PUB dataset with no
@@ -473,19 +511,51 @@ function initMap(){
   setCartoKey('');
   zoneLayer = L.layerGroup().addTo(map);
   dengueLayer = L.layerGroup().addTo(map);
+  linkLayer = L.layerGroup().addTo(map);
   alertLayer = L.layerGroup().addTo(map);
 
+  // Flood-prone spots: styled distinctly (dashed rose outline + a connecting
+  // line to the cluster) when within COMPOUND_THRESHOLD_M of an active dengue
+  // cluster — this is the map itself showing the joint insight, not just the
+  // text card below it. Every popup also states the nearest cluster distance
+  // regardless, so the relationship is visible on every marker, not only the
+  // flagged ones.
   FLOOD_PRONE_AREAS.forEach(([name,lat,lon])=>{
-    L.circle([lat,lon],{radius:220,color:'#c9820a',weight:1,fillColor:'#f2c46b',fillOpacity:0.35})
-      .bindPopup(`<b>${name}</b><br><span style="font-size:11px;color:#666">Known flood-prone spot (PUB list, Apr 2025)</span>`)
+    const {cluster, dist} = nearestDengueCluster(lat, lon);
+    const isCompound = cluster && dist <= COMPOUND_THRESHOLD_M;
+    const style = isCompound
+      ? {radius:220,color:COMPOUND_COLOR,weight:2.5,dashArray:'4,4',fillColor:'#f2c46b',fillOpacity:0.4}
+      : {radius:220,color:'#c9820a',weight:1,fillColor:'#f2c46b',fillOpacity:0.35};
+    const relText = cluster
+      ? (isCompound
+          ? `<br><span style="font-size:11px;color:${COMPOUND_COLOR};font-weight:700">⚠ ${dist===0?'Inside':fmtDist(dist)+' from'} an active dengue cluster (${cluster.locality}, ${cluster.cases} cases)</span>`
+          : `<br><span style="font-size:11px;color:#666">Nearest dengue cluster: ${cluster.locality}, ${fmtDist(dist)} away</span>`)
+      : '';
+    L.circle([lat,lon],style)
+      .bindPopup(`<b>${name}</b><br><span style="font-size:11px;color:#666">Known flood-prone spot (PUB list, Apr 2025)</span>${relText}`)
       .addTo(zoneLayer);
+    if(isCompound){
+      L.polyline([[lat,lon], clusterCenter(cluster.ring)],
+        {color:COMPOUND_COLOR,weight:1.5,dashArray:'3,5',opacity:0.7})
+        .addTo(linkLayer);
+    }
   });
 
+  // Dengue clusters: reciprocal nearest-flood-prone-spot info in the popup,
+  // so clicking either layer tells you about the other one too.
   DENGUE_CLUSTERS.forEach(c=>{
     const latlngs = c.ring.map(([lon,lat])=>[lat,lon]);
     const col = dengueColor(c.cases);
+    let nearestSpot=null, nearestSpotDist=Infinity;
+    FLOOD_PRONE_AREAS.forEach(([name,lat,lon])=>{
+      const d = distToClusterMeters(lat,lon,c.ring);
+      if(d<nearestSpotDist){ nearestSpotDist=d; nearestSpot=name; }
+    });
+    const relText = nearestSpot
+      ? `<br><span style="font-size:11px;color:#666">Nearest flood-prone spot: ${nearestSpot}, ${nearestSpotDist===0?'inside':fmtDist(nearestSpotDist)+' away'}</span>`
+      : '';
     L.polygon(latlngs,{color:col,weight:1.5,fillColor:col,fillOpacity:0.3})
-      .bindPopup(`<b>${c.locality}</b><br><span style="font-size:11px;color:#666">Active dengue cluster · ${c.cases} case${c.cases===1?'':'s'} (NEA, snapshot 2 Sep 2026)</span>`)
+      .bindPopup(`<b>${c.locality}</b><br><span style="font-size:11px;color:#666">Active dengue cluster · ${c.cases} case${c.cases===1?'':'s'} (NEA, snapshot 2 Sep 2026)</span>${relText}`)
       .addTo(dengueLayer);
   });
 }
@@ -496,8 +566,20 @@ function renderAlertsOnMap(){
   ALERTS.forEach(a=>{
     const color = (a.severity==="Extreme"||a.severity==="Severe") ? '#c0392b' :
                   (a.severity==="Moderate") ? '#c9820a' : '#7a8a83';
-    L.circleMarker([a.lat,a.lon],{radius:9,color:'#fff',weight:2,fillColor:color,fillOpacity:0.95})
-      .bindPopup(`<b>${a.area}</b><br>${a.description || a.headline}<br><span style="font-size:11px;color:#666">${a.severity} · ${fmtTimeAgo(a.issued)}</span>`)
+    const {cluster, dist} = nearestDengueCluster(a.lat, a.lon);
+    const isCompound = cluster && dist <= COMPOUND_THRESHOLD_M;
+    const relText = cluster
+      ? (isCompound
+          ? `<br><span style="font-size:11px;color:${COMPOUND_COLOR};font-weight:700">⚠ Also ${dist===0?'inside':fmtDist(dist)+' from'} an active dengue cluster (${cluster.locality})</span>`
+          : `<br><span style="font-size:11px;color:#666">Nearest dengue cluster: ${cluster.locality}, ${fmtDist(dist)} away</span>`)
+      : '';
+    L.circleMarker([a.lat,a.lon],{
+        radius: isCompound ? 11 : 9,
+        color: isCompound ? COMPOUND_COLOR : '#fff',
+        weight: isCompound ? 3 : 2,
+        fillColor:color, fillOpacity:0.95
+      })
+      .bindPopup(`<b>${a.area}</b><br>${a.description || a.headline}<br><span style="font-size:11px;color:#666">${a.severity} · ${fmtTimeAgo(a.issued)}</span>${relText}`)
       .addTo(alertLayer);
   });
 }
@@ -713,11 +795,7 @@ function refreshDerived(){
     sub.innerHTML = `Nearest listed flood-prone spot (<b>${nearestZone}</b>) is ${fmtDist(nearestZoneDist)} away.`;
   }
 
-  let nearestCluster = null, nearestClusterDist = Infinity;
-  DENGUE_CLUSTERS.forEach(c=>{
-    const d = distToClusterMeters(USER_LOC.lat, USER_LOC.lon, c.ring);
-    if(d<nearestClusterDist){ nearestClusterDist=d; nearestCluster=c; }
-  });
+  const {cluster: nearestCluster, dist: nearestClusterDist} = nearestDengueCluster(USER_LOC.lat, USER_LOC.lon);
 
   // ---- Layer the two hazards into one verdict instead of two disjointed
   // lists: a flood signal (active alert, or history of flooding at a nearby
@@ -730,7 +808,7 @@ function refreshDerived(){
   } else if(nearestZoneDist < 600){
     floodSignal = {type:'flood-prone history', dist:nearestZoneDist, label:nearestZone};
   }
-  const dengueSignal = (nearestCluster && nearestClusterDist < 500)
+  const dengueSignal = (nearestCluster && nearestClusterDist < COMPOUND_THRESHOLD_M)
     ? {dist:nearestClusterDist, label:nearestCluster.locality, cases:nearestCluster.cases}
     : null;
 
@@ -789,7 +867,20 @@ document.getElementById('applyCartoKeyBtn').addEventListener('click', ()=>{
   setCartoKey(key);
 });
 
-try{ initMap(); }catch(e){ console.error('Map init failed — continuing without the map:', e); }
+try{
+  initMap();
+}catch(e){
+  console.error('Map init failed — continuing without the map:', e);
+  const mapDiv = document.getElementById('map');
+  if(mapDiv){
+    mapDiv.style.display = 'flex';
+    mapDiv.style.alignItems = 'center';
+    mapDiv.style.justifyContent = 'center';
+    mapDiv.style.textAlign = 'center';
+    mapDiv.style.padding = '16px';
+    mapDiv.innerHTML = `<p style="font-size:12.5px;color:#5c6b63;margin:0;">Map couldn't load (${e.message}). The lists below still work — this is usually the map tile library being blocked, not a data problem.</p>`;
+  }
+}
 populateAreaSelect();
 renderStaticOverlap();
 locateUser();
