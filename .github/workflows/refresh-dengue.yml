@@ -1,0 +1,36 @@
+name: Refresh dengue clusters
+
+on:
+  schedule:
+    # Every 12 hours, roughly matching NEA's own update cadence on data.gov.sg
+    - cron: "0 */12 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - run: pip install requests
+
+      - run: python3 scripts/refresh_dengue.py
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- FloodWatch-SG.html; then
+            echo "No changes to commit."
+          else
+            git add FloodWatch-SG.html
+            git commit -m "Auto-refresh dengue clusters data"
+            git push
+          fi
